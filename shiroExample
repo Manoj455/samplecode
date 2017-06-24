@@ -1,0 +1,177 @@
+Shiro (Role Based Acesses Control )
+.........................................
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		 xmlns="http://xmlns.jcp.org/xml/ns/javaee"
+		 xsi:schemaLocation="http://xmlns.jcp.org/xml/ns/javaee http://xmlns.jcp.org/xml/ns/javaee/web-app_3_1.xsd"
+		 version="3.1">
+	<listener>
+		<listener-class>org.apache.shiro.web.env.EnvironmentLoaderListener</listener-class>
+	</listener>
+	<filter>
+		<filter-name>ShiroFilter</filter-name>
+		<filter-class>org.apache.shiro.web.servlet.ShiroFilter</filter-class>
+	</filter>
+	<filter-mapping>
+		<filter-name>ShiroFilter</filter-name>
+		<url-pattern>/*</url-pattern>
+		<dispatcher>REQUEST</dispatcher>
+		<dispatcher>FORWARD</dispatcher>
+		<dispatcher>INCLUDE</dispatcher>
+		<dispatcher>ERROR</dispatcher>
+	</filter-mapping>
+
+	<!--<filter>
+		<filter-name>SessionFilter</filter-name>
+		<filter-class>
+			com.cgi.atom.common.shiro.rbac.UserSessionFilter
+		</filter-class>
+		<init-param>
+			<param-name>avoid-urls</param-name>
+			<param-value>login.html</param-value>
+		</init-param>
+	</filter>
+	<filter-mapping>
+		<filter-name>SessionFilter</filter-name>
+		<url-pattern>/*</url-pattern>
+	</filter-mapping> -->
+  </web-app>
+  
+/*********************************************/
+shiro.ini
+
+[main]
+
+cacheManager = org.apache.shiro.cache.MemoryConstrainedCacheManager
+securityManager.cacheManager = $cacheManager
+
+#configured custom Relam
+jdbcRealm = com.cgi.atom.common.shiro.db.relam.DBRelam
+
+sessionManager =  org.apache.shiro.web.session.mgt.DefaultWebSessionManager
+securityManager.sessionManager = $sessionManager
+
+#sessionListener = com.cgi.atom.common.shiro.rbac.UserSessionListener
+#securityManager.sessionManager.sessionListeners = $sessionListener
+
+# session expiry time in milliseconds ( 1200000 = 20 min )
+securityManager.sessionManager.globalSessionTimeout = 1200000
+/*********************************************/
+package com.cgi.atom.common.shiro.db.relam;
+
+import com.cgi.atom.common.db.JdbiHelper;
+import org.apache.shiro.authc.*;
+import org.apache.shiro.authz.AuthorizationInfo;
+import org.apache.shiro.realm.jdbc.JdbcRealm;
+import org.apache.shiro.subject.PrincipalCollection;
+import org.skife.jdbi.v2.DBI;
+import org.skife.jdbi.v2.Handle;
+import org.skife.jdbi.v2.ResultIterator;
+import org.skife.jdbi.v2.util.StringMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Created by manoj.melingi on 1/27/2017.
+ */
+public class DBRelam extends JdbcRealm {
+
+    private static Logger log = LoggerFactory.getLogger("DBRelam");
+
+    protected static final String AUTHENTICATION_QUERY = "select user_name from user_data where user_name =:username";
+
+    protected static final String ROLE_QUERY = "select r.name as role_name from role r join group_role_mapping grm on r.id= grm.role_id join group_data gd on gd.id=grm.group_id join user_data_group_mapping udgm on udgm.group_id =gd.id join user_data u on u.id=udgm.user_id where u.user_name =:username";
+
+    protected static final String PERMISSION_QUERY = "select p.name as permission_name from permission p join role_permission_mapping rpm on rpm.permission_id = p.id join role r on r.id = rpm.role_id join group_role_mapping grm on r.id= grm.role_id join group_data gd on gd.id=grm.group_id join user_data_group_mapping udgm on udgm.group_id =gd.id join user_data u on u.id=udgm.user_id where u.user_name=:username";
+
+    protected static final String Customer_Query = "Select c.name as customer_name from customer c\n" +
+            "join user_data_customer_mapping udcm on c.id = udcm.customer_id\n" +
+            "join user_data u on u.id = udcm.user_id\n" +
+            "where u.user_name='dhananjayakumar.ramamurthy' ";
+
+    @Override
+    protected AuthenticationInfo doGetAuthenticationInfo(AuthenticationToken token) throws AuthenticationException {
+
+        JdbiHelper jdbiHelper = JdbiHelper.getInstance();
+        DBI dbi = jdbiHelper.getDBI();
+        Handle handle = dbi.open();
+        UsernamePasswordToken userPassToken = (UsernamePasswordToken) token;
+        final String username = userPassToken.getUsername();
+
+        if (username == null) {
+            log.info("Username is null.");
+            return null;
+        }
+
+        try {
+            String dbUserName = handle.createQuery(AUTHENTICATION_QUERY)
+                    .bind("username", username)
+                    .map(StringMapper.FIRST)
+                    .first();
+            if (dbUserName == null) {
+                log.info("No account found for user [" + username + "]");
+                return null;
+            }
+            SimpleAuthenticationInfo info = new SimpleAuthenticationInfo(username, dbUserName, "");
+            return info;
+        } finally {
+            handle.close();
+        }
+    }
+
+    protected AuthorizationInfo doGetAuthorizationInfo(PrincipalCollection principals) {
+
+        JdbiHelper jdbiHelper = JdbiHelper.getInstance();
+        DBI dbi = jdbiHelper.getDBI();
+        Handle handle = dbi.open();
+        String username = principals.getPrimaryPrincipal().toString();
+        Set<String> hasRoles = new HashSet<String>();
+        Set<String> hasPermissions = new HashSet<String>();
+        Set<String> hasCustomers = new HashSet<String>();
+
+
+        try {
+
+            ResultIterator<Map<String, Object>> rolesList = handle.createQuery(ROLE_QUERY).bind("username", username).iterator();
+
+            ResultIterator<Map<String, Object>> permissionList = handle.createQuery(PERMISSION_QUERY).bind("username", username).iterator();
+
+            ResultIterator<Map<String,Object>> customerList = handle.createQuery(Customer_Query).bind("username", username).iterator();
+
+            if (rolesList.hasNext()) {
+                hasRoles.add(rolesList.next().get("role_name").toString());
+            }
+            if (permissionList.hasNext()) {
+                hasPermissions.add(permissionList.next().get("permission_name").toString());
+            }
+
+            if(customerList.hasNext()) {
+                hasCustomers.add(customerList.next().get("customer_name").toString());
+            }
+
+        }catch (Throwable t) {
+            System.out.println(t.getMessage());
+        } finally {
+
+            handle.close();
+        }
+
+        SimpleAuthorizationInfoExtension infoExtension = new SimpleAuthorizationInfoExtension(hasRoles);
+        infoExtension.setStringPermissions(hasPermissions);
+        infoExtension.addStringCustomers(hasCustomers);
+
+/*
+        SimpleAuthorizationInfo info= new SimpleAuthorizationInfo(hasRoles);
+        info.setStringPermissions(hasPermissions);
+
+        return info;
+*/
+        System.out.println("Customers :" + hasCustomers.size());
+        return  infoExtension;
+    }
+
+}
